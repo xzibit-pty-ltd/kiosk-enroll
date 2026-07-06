@@ -1,32 +1,33 @@
 <#
   enroll.ps1  --  PUBLIC enrollment scaffold for Xzibit kiosks.
 
-  The one thing you paste on a fresh kiosk. It preflight-checks the machine,
-  takes a read-only GitHub PAT, fetches the PRIVATE bootstrap.ps1, and runs it.
-  Contains NOTHING sensitive: no token, no LifeFlight URL. The manifest URL is
-  just a pointer (useless without the PAT), so it's fine to bake in here.
+  The one thing you paste on a fresh kiosk. It installs the kiosk deploy AGENT,
+  which then manages every component (stats, app, scripts) per the fleet
+  manifest. Contains NOTHING sensitive: no token, no data URLs.
 
   Interactive (recommended - secure token prompt, nothing in shell history):
-    iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.2/enroll.ps1 | iex
+    iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v2/enroll.ps1 | iex
 
   Non-interactive (token via env so it stays off the command line):
-    $env:GITHUB_TOKEN='github_pat_xxx'; iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.2/enroll.ps1 | iex
+    $env:GITHUB_TOKEN='github_pat_xxx'; iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v2/enroll.ps1 | iex
+
+  The kiosk's hostname must be registered in the fleet manifest
+  (devices.<HOSTNAME>.components) before enrolling.
 #>
 param(
   [string]$Token,
-  [string]$ManifestUrl  = 'https://api.github.com/repos/xzibit-pty-ltd/kiosk-fleet/contents/manifest.json',
-  [string]$ScriptsRepo  = 'xzibit-pty-ltd/lfac-av-stats-sync',
-  [string]$BootstrapRef,   # empty => newest release (so this scaffold rarely needs re-tagging)
-  [string]$InstallPath,
-  [string]$SplashPath
+  [string]$ManifestUrl = 'https://api.github.com/repos/xzibit-pty-ltd/kiosk-fleet/contents/manifest.json',
+  [string]$AgentRepo   = 'xzibit-pty-ltd/kiosk-agent',
+  [string]$AgentRef,   # empty => newest release
+  [string]$CodeRoot, [string]$DataRoot
 )
 $ErrorActionPreference = 'Stop'
 $IsWin = ($env:OS -eq 'Windows_NT')
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 
 Say ''
-Say '  Xzibit kiosk enrollment' 'Cyan'
-Say '  -----------------------'
+Say '  Xzibit kiosk enrolment' 'Cyan'
+Say '  ----------------------'
 
 # --- preflight ---
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -37,50 +38,38 @@ if ($IsWin) {
 }
 Say "  host: $env:COMPUTERNAME   PowerShell: $($PSVersionTable.PSVersion)"
 
-# --- token: -Token param, else $env:GITHUB_TOKEN, else secure prompt ---
+# --- token: -Token, else $env:GITHUB_TOKEN, else secure prompt ---
 if (-not $Token) { $Token = $env:GITHUB_TOKEN }
-$interactive = -not $Token                      # only prompt-driven if we still have to ask
 if (-not $Token) {
   $sec = Read-Host '  Paste the read-only GitHub PAT' -AsSecureString
   if ($sec.Length -gt 0) {
-    $bstr  = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-    try { $Token = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try { $Token = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
   }
 }
 if (-not $Token) { Say '  No token provided - aborting.' 'Red'; return }
-$env:GITHUB_TOKEN = $Token                      # hand to bootstrap via env, never as a command-line arg
+$env:GITHUB_TOKEN = $Token   # handed to install-agent via env, never a command-line arg
+$h = @{ Authorization = "Bearer $Token"; 'User-Agent' = 'kiosk-enroll'; Accept = 'application/vnd.github.raw' }
 
-# --- optional splashPath (interactive only; normally comes from the manifest) ---
-if ($interactive -and -not $SplashPath) {
-  $sp = Read-Host '  splash.json path (press Enter to use the fleet manifest)'
-  if ($sp -and $sp.Trim()) { $SplashPath = $sp.Trim() }
+# --- resolve the agent release + fetch its installer ---
+if (-not $AgentRef) {
+  try { $AgentRef = (Invoke-RestMethod -Headers $h "https://api.github.com/repos/$AgentRepo/releases/latest" -TimeoutSec 30).tag_name }
+  catch { Say "  ERROR: cannot resolve $AgentRepo latest (the PAT needs Contents:read on it). $($_.Exception.Message)" 'Red'; return }
 }
+Say "  fetching install-agent ($AgentRepo@$AgentRef) ..."
+$ia = Join-Path ([IO.Path]::GetTempPath()) 'install-agent.ps1'
+try { Invoke-WebRequest -UseBasicParsing -Headers $h "https://api.github.com/repos/$AgentRepo/contents/install-agent.ps1?ref=$AgentRef" -OutFile $ia -TimeoutSec 60 }
+catch { Say "  ERROR: cannot fetch install-agent. Check the PAT has Contents:read on $AgentRepo. $($_.Exception.Message)" 'Red'; return }
 
-# --- fetch the private bootstrap (from the newest release unless pinned) ---
-$h  = @{ Authorization = "Bearer $Token"; 'User-Agent' = 'kiosk-enroll'; Accept = 'application/vnd.github.raw' }
-if (-not $BootstrapRef) {
-  try { $BootstrapRef = (Invoke-RestMethod -Headers $h "https://api.github.com/repos/$ScriptsRepo/releases/latest" -TimeoutSec 30).tag_name }
-  catch { Say "  ERROR: could not resolve the latest release (check the PAT has Contents read on $ScriptsRepo). $($_.Exception.Message)" 'Red'; return }
-}
-Say "  fetching bootstrap ($ScriptsRepo@$BootstrapRef) ..."
-$bs = Join-Path ([IO.Path]::GetTempPath()) 'lfac-bootstrap.ps1'
-try {
-  Invoke-WebRequest -UseBasicParsing -Headers $h "https://api.github.com/repos/$ScriptsRepo/contents/bootstrap.ps1?ref=$BootstrapRef" -OutFile $bs -TimeoutSec 60
-} catch {
-  Say "  ERROR: could not fetch bootstrap. Check the PAT has read-only Contents on $ScriptsRepo." 'Red'
-  Say "         ($($_.Exception.Message))" 'DarkGray'
-  return
-}
-
-# --- run it ---
+# --- run it (token via env; installs agent, ACLs the root, schedules reconcile) ---
 $psExe  = if ($IsWin) { 'powershell.exe' } else { 'pwsh' }
-$bsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $bs, '-ManifestUrl', $ManifestUrl)   # token passed via $env:GITHUB_TOKEN, not an arg
-if ($InstallPath) { $bsArgs += @('-InstallPath', $InstallPath) }
-if ($SplashPath)  { $bsArgs += @('-SplashPath',  $SplashPath) }
-Say '  running bootstrap ...' 'Cyan'
-& $psExe @bsArgs
+$iaArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ia, '-ManifestUrl', $ManifestUrl, '-AgentRepo', $AgentRepo)
+if ($CodeRoot) { $iaArgs += @('-CodeRoot', $CodeRoot) }
+if ($DataRoot) { $iaArgs += @('-DataRoot', $DataRoot) }
+Say '  installing the agent ...' 'Cyan'
+& $psExe @iaArgs
 $code = $LASTEXITCODE
-Remove-Item $bs -Force -ErrorAction SilentlyContinue
+Remove-Item $ia -Force -ErrorAction SilentlyContinue
 Say ''
-if ($code -eq 0 -or $null -eq $code) { Say '  enrollment finished.' 'Green' } else { Say "  bootstrap exited with code $code - see the log above." 'Yellow' }
+if ($code -eq 0 -or $null -eq $code) { Say '  enrolment finished - the agent will reconcile this kiosk to the manifest.' 'Green' }
+else { Say "  install-agent exited with code $code - see the output above." 'Yellow' }
