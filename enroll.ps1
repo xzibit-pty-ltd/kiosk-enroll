@@ -7,16 +7,16 @@
   just a pointer (useless without the PAT), so it's fine to bake in here.
 
   Interactive (recommended - secure token prompt, nothing in shell history):
-    iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.1/enroll.ps1 | iex
+    iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.2/enroll.ps1 | iex
 
   Non-interactive (token via env so it stays off the command line):
-    $env:GITHUB_TOKEN='github_pat_xxx'; iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.1/enroll.ps1 | iex
+    $env:GITHUB_TOKEN='github_pat_xxx'; iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.2/enroll.ps1 | iex
 #>
 param(
   [string]$Token,
   [string]$ManifestUrl  = 'https://api.github.com/repos/xzibit-pty-ltd/kiosk-fleet/contents/manifest.json',
   [string]$ScriptsRepo  = 'xzibit-pty-ltd/lfac-av-stats-sync',
-  [string]$BootstrapRef = 'v1.0.3',
+  [string]$BootstrapRef,   # empty => newest release (so this scaffold rarely needs re-tagging)
   [string]$InstallPath,
   [string]$SplashPath
 )
@@ -57,9 +57,13 @@ if ($interactive -and -not $SplashPath) {
   if ($sp -and $sp.Trim()) { $SplashPath = $sp.Trim() }
 }
 
-# --- fetch the private bootstrap ---
-Say "  fetching bootstrap ($ScriptsRepo@$BootstrapRef) ..."
+# --- fetch the private bootstrap (from the newest release unless pinned) ---
 $h  = @{ Authorization = "Bearer $Token"; 'User-Agent' = 'kiosk-enroll'; Accept = 'application/vnd.github.raw' }
+if (-not $BootstrapRef) {
+  try { $BootstrapRef = (Invoke-RestMethod -Headers $h "https://api.github.com/repos/$ScriptsRepo/releases/latest" -TimeoutSec 30).tag_name }
+  catch { Say "  ERROR: could not resolve the latest release (check the PAT has Contents read on $ScriptsRepo). $($_.Exception.Message)" 'Red'; return }
+}
+Say "  fetching bootstrap ($ScriptsRepo@$BootstrapRef) ..."
 $bs = Join-Path ([IO.Path]::GetTempPath()) 'lfac-bootstrap.ps1'
 try {
   Invoke-WebRequest -UseBasicParsing -Headers $h "https://api.github.com/repos/$ScriptsRepo/contents/bootstrap.ps1?ref=$BootstrapRef" -OutFile $bs -TimeoutSec 60

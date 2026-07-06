@@ -12,12 +12,12 @@ Open an **Administrator PowerShell** on the kiosk.
 
 **Interactive** (recommended — secure token prompt, nothing in shell history):
 ```powershell
-iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.1/enroll.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.2/enroll.ps1 | iex
 ```
 
 **Non-interactive** (token via env var so it stays off the command line):
 ```powershell
-$env:GITHUB_TOKEN='github_pat_xxx'; iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.1/enroll.ps1 | iex
+$env:GITHUB_TOKEN='github_pat_xxx'; iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.2/enroll.ps1 | iex
 ```
 
 If the machine isn't registered in the fleet manifest yet, run interactively —
@@ -29,7 +29,7 @@ it prompts for the `splash.json` path.
 - The kiosk's `devices.<HOSTNAME>` block in `kiosk-fleet` (or pass `-SplashPath`).
 
 ## Notes
-- The paste URL is pinned to a tag (`v1.1`) for stability. Cut a new tag if
+- The paste URL is pinned to a tag (`v1.2`) for stability. Cut a new tag if
   `enroll.ps1` changes, and update the URL here.
 - Interactive mode reads the PAT with `Read-Host -AsSecureString` and passes it
   to bootstrap via `$env:GITHUB_TOKEN` — so the token never lands in PowerShell
