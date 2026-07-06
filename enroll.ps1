@@ -6,23 +6,22 @@
   Contains NOTHING sensitive: no token, no LifeFlight URL. The manifest URL is
   just a pointer (useless without the PAT), so it's fine to bake in here.
 
-  Interactive (nice CLI prompt, secure token entry):
-    iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1/enroll.ps1 | iex
+  Interactive (recommended - secure token prompt, nothing in shell history):
+    iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.1/enroll.ps1 | iex
 
-  Non-interactive (everything on the line):
-    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1/enroll.ps1).Content)) -Token 'github_pat_xxx' [-SplashPath 'C:\...\splash.json']
+  Non-interactive (token via env so it stays off the command line):
+    $env:GITHUB_TOKEN='github_pat_xxx'; iwr -useb https://raw.githubusercontent.com/xzibit-pty-ltd/kiosk-enroll/v1.1/enroll.ps1 | iex
 #>
 param(
   [string]$Token,
   [string]$ManifestUrl  = 'https://api.github.com/repos/xzibit-pty-ltd/kiosk-fleet/contents/manifest.json',
   [string]$ScriptsRepo  = 'xzibit-pty-ltd/lfac-av-stats-sync',
-  [string]$BootstrapRef = 'v1.0.2',
+  [string]$BootstrapRef = 'v1.0.3',
   [string]$InstallPath,
   [string]$SplashPath
 )
 $ErrorActionPreference = 'Stop'
 $IsWin = ($env:OS -eq 'Windows_NT')
-$interactive = -not $PSBoundParameters.ContainsKey('Token')   # bare run => prompt flow
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 
 Say ''
@@ -38,7 +37,9 @@ if ($IsWin) {
 }
 Say "  host: $env:COMPUTERNAME   PowerShell: $($PSVersionTable.PSVersion)"
 
-# --- token: param, else secure prompt ---
+# --- token: -Token param, else $env:GITHUB_TOKEN, else secure prompt ---
+if (-not $Token) { $Token = $env:GITHUB_TOKEN }
+$interactive = -not $Token                      # only prompt-driven if we still have to ask
 if (-not $Token) {
   $sec = Read-Host '  Paste the read-only GitHub PAT' -AsSecureString
   if ($sec.Length -gt 0) {
@@ -48,6 +49,7 @@ if (-not $Token) {
   }
 }
 if (-not $Token) { Say '  No token provided - aborting.' 'Red'; return }
+$env:GITHUB_TOKEN = $Token                      # hand to bootstrap via env, never as a command-line arg
 
 # --- optional splashPath (interactive only; normally comes from the manifest) ---
 if ($interactive -and -not $SplashPath) {
@@ -69,7 +71,7 @@ try {
 
 # --- run it ---
 $psExe  = if ($IsWin) { 'powershell.exe' } else { 'pwsh' }
-$bsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $bs, '-Token', $Token, '-ManifestUrl', $ManifestUrl)
+$bsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $bs, '-ManifestUrl', $ManifestUrl)   # token passed via $env:GITHUB_TOKEN, not an arg
 if ($InstallPath) { $bsArgs += @('-InstallPath', $InstallPath) }
 if ($SplashPath)  { $bsArgs += @('-SplashPath',  $SplashPath) }
 Say '  running bootstrap ...' 'Cyan'
